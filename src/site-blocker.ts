@@ -11,6 +11,9 @@ const HOSTS_PATH = "/etc/hosts";
 const MARKER_BEGIN = "# BEGIN SITE-BLOCKER";
 const MARKER_END = "# END SITE-BLOCKER";
 
+// Access logger daemon script (Python CLI sibling)
+const LOGGER_SCRIPT = path.join(__dirname, "..", "..", "access_logger.py");
+
 // Config stored in ~/Library/Application Support/SiteBlocker/blocked.json
 function getConfigDir(): string {
   const dir = path.join(
@@ -168,9 +171,9 @@ export function buildHostsContent(
   const sorted = [...domains].sort();
   const blockLines = [MARKER_BEGIN];
   for (const d of sorted) {
-    blockLines.push(`0.0.0.0 ${d}`);
+    blockLines.push(`127.0.0.1 ${d}`);
     if (!d.startsWith("www.")) {
-      blockLines.push(`0.0.0.0 www.${d}`);
+      blockLines.push(`127.0.0.1 www.${d}`);
     }
   }
   blockLines.push(MARKER_END);
@@ -198,13 +201,23 @@ export function writeHostsWithPrivilege(domains: string[]): void {
   fs.writeFileSync(tmpFile, newContent);
 
   // Use osascript for admin privilege — user sees native macOS auth dialog
-  const script = [
+  const steps = [
     `cp /etc/hosts /etc/hosts.site-blocker.bak`,
     `cp ${tmpFile} /etc/hosts`,
     `chmod 644 /etc/hosts`,
     `dscacheutil -flushcache`,
     `killall -HUP mDNSResponder`,
-  ].join(" && ");
+  ];
+
+  // Start/stop access logger daemon alongside hosts changes
+  if (domains.length > 0 && fs.existsSync(LOGGER_SCRIPT)) {
+    steps.push(`/usr/bin/python3 ${LOGGER_SCRIPT} start`);
+  } else if (domains.length === 0 && fs.existsSync(LOGGER_SCRIPT)) {
+    // Stop daemon before clearing hosts
+    steps.unshift(`/usr/bin/python3 ${LOGGER_SCRIPT} stop || true`);
+  }
+
+  const script = steps.join(" && ");
 
   try {
     execSync(
@@ -226,4 +239,30 @@ export function flushDns(): void {
     `osascript -e 'do shell script "dscacheutil -flushcache && killall -HUP mDNSResponder" with administrator privileges'`,
     { stdio: "pipe" }
   );
+}
+
+// --- Access log ---
+
+export interface AccessLogEntry {
+  domain: string;
+  ts: string;
+}
+
+export function readAccessLog(days?: number): AccessLogEntry[] {
+  const logPath = path.join(getConfigDir(), "access_log.json");
+  if (!fs.existsSync(logPath)) return [];
+
+  let entries: AccessLogEntry[];
+  try {
+    entries = JSON.parse(fs.readFileSync(logPath, "utf-8"));
+  } catch {
+    return [];
+  }
+
+  if (days !== undefined) {
+    const cutoff = Date.now() - days * 86400 * 1000;
+    entries = entries.filter((e) => new Date(e.ts).getTime() >= cutoff);
+  }
+
+  return entries;
 }

@@ -10,4 +10,6 @@ contextBridge.exposeInMainWorld("siteBlocker", {
   enableBlocking: (): Promise<void> => ipcRenderer.invoke("enable-blocking"),
   disableBlocking: (): Promise<void> =>
     ipcRenderer.invoke("disable-blocking"),
+  getAccessLog: (days?: number): Promise<{ domain: string; ts: string }[]> =>
+    ipcRenderer.invoke("get-access-log", days),
 });

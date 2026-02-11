@@ -6,6 +6,7 @@ import {
   removeDomains,
   isActive,
   writeHostsWithPrivilege,
+  readAccessLog,
 } from "./site-blocker";
 
 let mainWindow: BrowserWindow | null = null;
@@ -91,6 +92,10 @@ ipcMain.handle("enable-blocking", () => {
 
 ipcMain.handle("disable-blocking", () => {
   writeHostsWithPrivilege([]);
+});
+
+ipcMain.handle("get-access-log", (_event, days?: number) => {
+  return readAccessLog(days);
 });
 
 // --- App lifecycle ---

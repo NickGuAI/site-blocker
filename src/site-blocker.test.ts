@@ -133,8 +133,8 @@ const SAMPLE_HOSTS_WITH_BLOCK = `\
 ::1             localhost
 
 # BEGIN SITE-BLOCKER
-0.0.0.0 facebook.com
-0.0.0.0 www.facebook.com
+127.0.0.1 facebook.com
+127.0.0.1 www.facebook.com
 # END SITE-BLOCKER
 `;
 
@@ -142,8 +142,8 @@ describe("buildHostsContent", () => {
   it("adds block to clean hosts", () => {
     const result = buildHostsContent(SAMPLE_HOSTS, ["facebook.com"]);
     expect(result).toContain("# BEGIN SITE-BLOCKER");
-    expect(result).toContain("0.0.0.0 facebook.com");
-    expect(result).toContain("0.0.0.0 www.facebook.com");
+    expect(result).toContain("127.0.0.1 facebook.com");
+    expect(result).toContain("127.0.0.1 www.facebook.com");
     expect(result).toContain("# END SITE-BLOCKER");
     // Original content preserved
     expect(result).toContain("127.0.0.1\tlocalhost");
@@ -152,8 +152,8 @@ describe("buildHostsContent", () => {
   it("replaces existing block", () => {
     const result = buildHostsContent(SAMPLE_HOSTS_WITH_BLOCK, ["reddit.com"]);
     expect(result).not.toContain("facebook.com");
-    expect(result).toContain("0.0.0.0 reddit.com");
-    expect(result).toContain("0.0.0.0 www.reddit.com");
+    expect(result).toContain("127.0.0.1 reddit.com");
+    expect(result).toContain("127.0.0.1 www.reddit.com");
     // Only one block
     expect(result.split("# BEGIN SITE-BLOCKER").length - 1).toBe(1);
   });
@@ -168,8 +168,8 @@ describe("buildHostsContent", () => {
     const domains = ["facebook.com", "reddit.com", "twitter.com"];
     const result = buildHostsContent(SAMPLE_HOSTS, domains);
     for (const d of domains) {
-      expect(result).toContain(`0.0.0.0 ${d}`);
-      expect(result).toContain(`0.0.0.0 www.${d}`);
+      expect(result).toContain(`127.0.0.1 ${d}`);
+      expect(result).toContain(`127.0.0.1 www.${d}`);
     }
   });
 

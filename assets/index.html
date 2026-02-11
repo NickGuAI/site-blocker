@@ -70,6 +70,24 @@
       toastTimer = setTimeout(() => toast.classList.remove('visible'), 2500);
     }
 
+    // Access log: domain -> last attempt timestamp
+    let accessLogMap = {};
+
+    function formatStreak(lastTs) {
+      if (!lastTs) return null;
+      const elapsed = Date.now() - new Date(lastTs).getTime();
+      if (elapsed < 0) return 'just now';
+      const minutes = Math.floor(elapsed / 60000);
+      const hours = Math.floor(minutes / 60);
+      const days = Math.floor(hours / 24);
+
+      const parts = [];
+      if (days > 0) parts.push(`${days} day${days === 1 ? '' : 's'}`);
+      if (hours % 24 > 0) parts.push(`${hours % 24} hour${hours % 24 === 1 ? '' : 's'}`);
+      if (parts.length === 0) parts.push(`${Math.max(minutes, 1)} min`);
+      return parts.join(', ') + ' clean';
+    }
+
     function renderDomains(domains) {
       if (domains.length === 0) {
         domainList.innerHTML = '<div class="empty-state"><span class="empty-state-text">No domains yet</span></div>';
@@ -78,12 +96,22 @@
       }
 
       const sorted = [...domains].sort();
-      domainList.innerHTML = sorted.map(d => `
-        <div class="domain-card" data-domain="${d}">
-          <span class="domain-name">${d}</span>
-          <button class="btn-remove" title="Remove ${d}">&times;</button>
-        </div>
-      `).join('');
+      domainList.innerHTML = sorted.map(d => {
+        const lastTs = accessLogMap[d];
+        const streak = formatStreak(lastTs);
+        const streakHtml = streak
+          ? `<span class="domain-streak">${streak}</span>`
+          : '<span class="domain-streak no-data">No attempts logged</span>';
+        return `
+          <div class="domain-card" data-domain="${d}">
+            <div class="domain-info">
+              <span class="domain-name">${d}</span>
+              ${streakHtml}
+            </div>
+            <button class="btn-remove" title="Remove ${d}">&times;</button>
+          </div>
+        `;
+      }).join('');
 
       domainCount.textContent = `${domains.length} domain${domains.length === 1 ? '' : 's'}`;
     }
@@ -96,10 +124,21 @@
 
     async function refresh() {
       try {
-        const [domains, active] = await Promise.all([
+        const [domains, active, logEntries] = await Promise.all([
           api.getDomains(),
-          api.getStatus()
+          api.getStatus(),
+          api.getAccessLog()
         ]);
+
+        // Build map: domain -> most recent timestamp
+        accessLogMap = {};
+        for (const entry of logEntries) {
+          const prev = accessLogMap[entry.domain];
+          if (!prev || entry.ts > prev) {
+            accessLogMap[entry.domain] = entry.ts;
+          }
+        }
+
         renderDomains(domains);
         updateBadge(active);
       } catch (err) {

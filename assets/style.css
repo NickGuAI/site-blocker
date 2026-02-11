@@ -255,10 +255,28 @@ body {
   box-shadow: 0 2px 12px rgba(28, 28, 28, 0.03);
 }
 
+.domain-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
 .domain-name {
   font-size: 15px;
   color: var(--sumi-black);
   letter-spacing: 0.01em;
+}
+
+.domain-streak {
+  font-size: 12px;
+  color: var(--moss-stone);
+  letter-spacing: 0.02em;
+}
+
+.domain-streak.no-data {
+  color: var(--diluted-ink);
 }
 
 .btn-remove {
