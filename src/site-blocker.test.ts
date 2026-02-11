@@ -146,7 +146,9 @@ describe("buildHostsContent", () => {
     const result = buildHostsContent(SAMPLE_HOSTS, ["facebook.com"]);
     expect(result).toContain("# BEGIN SITE-BLOCKER");
     expect(result).toContain("127.0.0.1 facebook.com");
+    expect(result).toContain("::1 facebook.com");
     expect(result).toContain("127.0.0.1 www.facebook.com");
+    expect(result).toContain("::1 www.facebook.com");
     expect(result).toContain("# END SITE-BLOCKER");
     // Original content preserved
     expect(result).toContain("127.0.0.1\tlocalhost");
@@ -156,7 +158,9 @@ describe("buildHostsContent", () => {
     const result = buildHostsContent(SAMPLE_HOSTS_WITH_BLOCK, ["reddit.com"]);
     expect(result).not.toContain("facebook.com");
     expect(result).toContain("127.0.0.1 reddit.com");
+    expect(result).toContain("::1 reddit.com");
     expect(result).toContain("127.0.0.1 www.reddit.com");
+    expect(result).toContain("::1 www.reddit.com");
     // Only one block
     expect(result.split("# BEGIN SITE-BLOCKER").length - 1).toBe(1);
   });
@@ -172,7 +176,9 @@ describe("buildHostsContent", () => {
     const result = buildHostsContent(SAMPLE_HOSTS, domains);
     for (const d of domains) {
       expect(result).toContain(`127.0.0.1 ${d}`);
+      expect(result).toContain(`::1 ${d}`);
       expect(result).toContain(`127.0.0.1 www.${d}`);
+      expect(result).toContain(`::1 www.${d}`);
     }
   });
 

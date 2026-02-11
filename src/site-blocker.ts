@@ -70,6 +70,10 @@ function getRealUser(): string {
   }
 }
 
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
 // --- Domain normalization ---
 
 export function normalizeDomain(raw: string): string {
@@ -94,17 +98,23 @@ export function normalizeDomain(raw: string): string {
 
 export interface SiteBlockerConfig {
   domains: string[];
+  enabled?: boolean;
 }
 
 export function loadConfig(
   configPath: string = getConfigPath()
 ): SiteBlockerConfig {
   if (!fs.existsSync(configPath)) {
-    const defaultConfig: SiteBlockerConfig = { domains: [] };
+    const defaultConfig: SiteBlockerConfig = { domains: [], enabled: false };
     saveConfig(defaultConfig, configPath);
     return defaultConfig;
   }
-  return JSON.parse(fs.readFileSync(configPath, "utf-8"));
+  const parsed = JSON.parse(fs.readFileSync(configPath, "utf-8")) as Partial<SiteBlockerConfig>;
+  const domains = Array.isArray(parsed.domains)
+    ? parsed.domains.filter((d): d is string => typeof d === "string")
+    : [];
+  const enabled = parsed.enabled === true;
+  return { domains, enabled };
 }
 
 export function saveConfig(
@@ -116,6 +126,15 @@ export function saveConfig(
     fs.mkdirSync(dir, { recursive: true });
   }
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
+}
+
+export function setEnabled(
+  enabled: boolean,
+  configPath: string = getConfigPath()
+): void {
+  const config = loadConfig(configPath);
+  config.enabled = enabled;
+  saveConfig(config, configPath);
 }
 
 // --- CRUD ---
@@ -210,13 +229,21 @@ export function buildHostsContent(
   const blockLines = [MARKER_BEGIN];
   for (const d of sorted) {
     blockLines.push(`127.0.0.1 ${d}`);
+    blockLines.push(`::1 ${d}`);
     if (!d.startsWith("www.")) {
       blockLines.push(`127.0.0.1 www.${d}`);
+      blockLines.push(`::1 www.${d}`);
     }
   }
   blockLines.push(MARKER_END);
 
   return base.trimEnd() + "\n\n" + blockLines.join("\n") + "\n";
+}
+
+export function needsHostsSync(domains: string[]): boolean {
+  const current = fs.readFileSync(HOSTS_PATH, "utf-8");
+  const expected = buildHostsContent(current, domains);
+  return current !== expected;
 }
 
 // --- Privilege escalation via osascript ---
@@ -239,10 +266,13 @@ export function writeHostsWithPrivilege(domains: string[]): void {
   // Use osascript for admin privilege — user sees native macOS auth dialog
   const steps = [
     `cp /etc/hosts /etc/hosts.site-blocker.bak`,
-    `cp ${tmpFile} /etc/hosts`,
+    `cat ${shellQuote(tmpFile)} > /etc/hosts`,
+    `xattr -c /etc/hosts 2>/dev/null || true`,
+    `chown root:wheel /etc/hosts`,
     `chmod 644 /etc/hosts`,
     `dscacheutil -flushcache`,
     `killall -HUP mDNSResponder 2>/dev/null || true`,
+    `killall -HUP mDNSResponderHelper 2>/dev/null || true`,
   ];
 
   // Start/stop access logger daemon alongside hosts changes
@@ -302,6 +332,16 @@ const PID_FILE = "/tmp/site-blocker-logger.pid";
 const ACCESS_LOG_JSONL = "access_log.jsonl";
 const ACCESS_LOG_JSON = "access_log.json";
 
+function hasLoopbackLoggerListener(): boolean {
+  const cmd = `netstat -anv -p tcp | awk '($1 ~ /^tcp/ && $6 == "LISTEN" && ($4 == "127.0.0.1.80" || $4 == "127.0.0.1.443" || $4 == "::1.80" || $4 == "::1.443")) { found = 1 } END { exit found ? 0 : 1 }'`;
+  try {
+    execSync(cmd, { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function isPidRunning(pid: number): boolean {
   if (!Number.isFinite(pid) || pid <= 0) return false;
   try {
@@ -316,22 +356,25 @@ export function isPidRunning(pid: number): boolean {
 
 export function isLoggerRunning(): boolean {
   if (!fs.existsSync(PID_FILE)) {
-    log("isLoggerRunning: no pid file");
-    return false;
+    const listener = hasLoopbackLoggerListener();
+    log("isLoggerRunning: no pid file, listener =", listener);
+    return listener;
   }
 
   const pid = parseInt(fs.readFileSync(PID_FILE, "utf-8").trim(), 10);
   if (!Number.isFinite(pid) || pid <= 0) {
-    log("isLoggerRunning: invalid pid file");
-    return false;
+    const listener = hasLoopbackLoggerListener();
+    log("isLoggerRunning: invalid pid file, listener =", listener);
+    return listener;
   }
 
   if (isPidRunning(pid)) {
     log("isLoggerRunning: yes, pid =", pid);
     return true;
   }
-  log("isLoggerRunning: pid file exists but process dead");
-  return false;
+  const listener = hasLoopbackLoggerListener();
+  log("isLoggerRunning: pid file dead, listener =", listener);
+  return listener;
 }
 
 export function ensureLoggerRunning(): void {

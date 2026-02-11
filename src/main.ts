@@ -2,9 +2,11 @@ import { app, BrowserWindow, ipcMain } from "electron";
 import * as path from "path";
 import {
   loadConfig,
+  setEnabled,
   addDomains,
   removeDomains,
   isActive,
+  needsHostsSync,
   writeHostsWithPrivilege,
   readAccessLog,
   isLoggerRunning,
@@ -55,9 +57,10 @@ ipcMain.handle("add-domain", (_event, domain: string) => {
   // Auto-sync hosts if blocking is active
   if (added.length > 0) {
     try {
-      if (isActive()) {
-        log("add-domain: blocking active, syncing hosts");
-        writeHostsWithPrivilege(loadConfig().domains);
+      const config = loadConfig();
+      if (config.enabled === true) {
+        log("add-domain: blocking enabled, syncing hosts");
+        writeHostsWithPrivilege(config.domains);
       }
     } catch (err) {
       log("add-domain: hosts sync failed:", err);
@@ -75,9 +78,10 @@ ipcMain.handle("remove-domain", (_event, domain: string) => {
   // Auto-sync hosts if blocking is active
   if (removed.length > 0) {
     try {
-      if (isActive()) {
-        log("remove-domain: blocking active, syncing hosts");
-        writeHostsWithPrivilege(loadConfig().domains);
+      const config = loadConfig();
+      if (config.enabled === true) {
+        log("remove-domain: blocking enabled, syncing hosts");
+        writeHostsWithPrivilege(config.domains);
       }
     } catch (err) {
       log("remove-domain: hosts sync failed:", err);
@@ -89,9 +93,11 @@ ipcMain.handle("remove-domain", (_event, domain: string) => {
 
 ipcMain.handle("get-status", () => {
   try {
+    const config = loadConfig();
     const active = isActive();
-    log("get-status:", active);
-    return active;
+    const status = config.enabled === true && active;
+    log("get-status:", status, "(enabled =", config.enabled, "active =", active, ")");
+    return status;
   } catch {
     return false;
   }
@@ -104,12 +110,14 @@ ipcMain.handle("enable-blocking", () => {
     throw new Error("No domains to block. Add some first.");
   }
   writeHostsWithPrivilege(config.domains);
+  setEnabled(true);
   log("enable-blocking: done");
 });
 
 ipcMain.handle("disable-blocking", () => {
   log("disable-blocking");
   writeHostsWithPrivilege([]);
+  setEnabled(false);
   log("disable-blocking: done");
 });
 
@@ -126,13 +134,43 @@ ipcMain.handle("get-access-log", (_event, days?: number) => {
 
 app.whenReady().then(() => {
   log("app ready");
+  let config = loadConfig();
+  const active = isActive();
+  if (config.enabled !== true && active && config.domains.length > 0) {
+    // Backward-compat migration: old config had no explicit enabled flag.
+    setEnabled(true);
+    config = loadConfig();
+    log("startup: migrated enabled flag from active hosts state");
+  }
+
   createWindow();
 
-  const active = isActive();
-  const loggerRunning = isLoggerRunning();
-  log("startup: blocking active =", active, "logger running =", loggerRunning);
+  const shouldBeEnabled = config.enabled === true && config.domains.length > 0;
+  let loggerRunning = isLoggerRunning();
+  log(
+    "startup: shouldBeEnabled =",
+    shouldBeEnabled,
+    "active =",
+    active,
+    "logger running =",
+    loggerRunning
+  );
 
-  if (active && !loggerRunning) {
+  if (shouldBeEnabled) {
+    try {
+      const syncNeeded = !active || needsHostsSync(config.domains);
+      log("startup: hosts sync needed =", syncNeeded);
+      if (syncNeeded) {
+        log("startup: re-syncing /etc/hosts for active blocking");
+        writeHostsWithPrivilege(config.domains);
+      }
+    } catch (err) {
+      log("startup: hosts sync check/repair failed:", err);
+    }
+  }
+
+  loggerRunning = isLoggerRunning();
+  if (shouldBeEnabled && !loggerRunning) {
     log("startup: logger not running, attempting start...");
     try {
       ensureLoggerRunning();

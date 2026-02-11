@@ -1,6 +1,6 @@
 {
   "name": "site-blocker",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "Block distracting websites via /etc/hosts",
   "main": "dist/main.js",
   "scripts": {
