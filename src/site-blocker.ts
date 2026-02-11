@@ -11,8 +11,18 @@ const HOSTS_PATH = "/etc/hosts";
 const MARKER_BEGIN = "# BEGIN SITE-BLOCKER";
 const MARKER_END = "# END SITE-BLOCKER";
 
-// Access logger daemon script (Python CLI sibling)
-const LOGGER_SCRIPT = path.join(__dirname, "..", "..", "access_logger.py");
+// Access logger daemon script — resolve for both dev and packaged app
+function getLoggerScript(): string | null {
+  // Packaged app: <app>/Contents/Resources/access_logger.py
+  const packaged = path.join(process.resourcesPath || "", "access_logger.py");
+  if (fs.existsSync(packaged)) return packaged;
+
+  // Dev mode: two levels up from electron/dist/
+  const dev = path.join(__dirname, "..", "..", "access_logger.py");
+  if (fs.existsSync(dev)) return dev;
+
+  return null;
+}
 
 // Config stored in ~/Library/Application Support/SiteBlocker/blocked.json
 function getConfigDir(): string {
@@ -210,11 +220,16 @@ export function writeHostsWithPrivilege(domains: string[]): void {
   ];
 
   // Start/stop access logger daemon alongside hosts changes
-  if (domains.length > 0 && fs.existsSync(LOGGER_SCRIPT)) {
-    steps.push(`/usr/bin/python3 ${LOGGER_SCRIPT} start`);
-  } else if (domains.length === 0 && fs.existsSync(LOGGER_SCRIPT)) {
-    // Stop daemon before clearing hosts
-    steps.unshift(`/usr/bin/python3 ${LOGGER_SCRIPT} stop || true`);
+  // Paths need \" quoting for spaces (e.g. "Site Blocker.app" in packaged path)
+  const loggerScript = getLoggerScript();
+  if (domains.length > 0 && loggerScript) {
+    // Set SUDO_USER so the daemon writes logs to the real user's home
+    const user = process.env.USER || "";
+    steps.push(
+      `SUDO_USER=${user} /usr/bin/python3 \\"${loggerScript}\\" start`
+    );
+  } else if (domains.length === 0 && loggerScript) {
+    steps.unshift(`/usr/bin/python3 \\"${loggerScript}\\" stop || true`);
   }
 
   const script = steps.join(" && ");

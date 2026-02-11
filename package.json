@@ -28,6 +28,12 @@
       "dist/**/*",
       "assets/**/*"
     ],
+    "extraResources": [
+      {
+        "from": "../access_logger.py",
+        "to": "access_logger.py"
+      }
+    ],
     "mac": {
       "notarize": false,
       "category": "public.app-category.utilities",
