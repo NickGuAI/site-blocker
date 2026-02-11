@@ -9,6 +9,7 @@ RELEASE_DIR="/Users/yugu/Desktop/gehirn/product-releases/site-blocker"
 GITHUB_REPO="NickGuAI/site-blocker"
 VERSION=$(node -p "require('$ELECTRON_DIR/package.json').version")
 DMG="$ELECTRON_DIR/dist/Site Blocker-$VERSION-arm64.dmg"
+DMG_BLOCKMAP="$DMG.blockmap"
 
 echo "=== Site Blocker v$VERSION Release ==="
 
@@ -20,6 +21,11 @@ cd "$PROJECT_DIR" && make dist-macos
 if [ ! -f "$DMG" ]; then
   echo "ERROR: DMG not found at $DMG"
   exit 1
+fi
+
+RELEASE_ASSETS=("$DMG")
+if [ -f "$DMG_BLOCKMAP" ]; then
+  RELEASE_ASSETS+=("$DMG_BLOCKMAP")
 fi
 
 # --- 2. Create or verify public release repo ---
@@ -74,11 +80,14 @@ else
   git push origin main
 fi
 
-# Create release (skip if tag already exists)
+# Create release (or update assets if tag already exists)
 if gh release view "v$VERSION" --repo "$GITHUB_REPO" > /dev/null 2>&1; then
-  echo "Release v$VERSION already exists, skipping."
+  echo "Release v$VERSION already exists, replacing DMG assets."
+  gh release upload "v$VERSION" "${RELEASE_ASSETS[@]}" \
+    --repo "$GITHUB_REPO" \
+    --clobber
 else
-  gh release create "v$VERSION" "$DMG" \
+  gh release create "v$VERSION" "${RELEASE_ASSETS[@]}" \
     --repo "$GITHUB_REPO" \
     --title "Site Blocker v$VERSION" \
     --generate-notes
