@@ -6,7 +6,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   normalizeDomain,
   loadConfig,
@@ -16,6 +16,8 @@ import {
   isActiveInContent,
   buildHostsContent,
   parseHostsRemoveBlock,
+  isPidRunning,
+  readAccessLog,
 } from "./site-blocker";
 
 // --- Test helpers ---
@@ -27,6 +29,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -248,5 +251,67 @@ describe("removeDomains", () => {
     saveConfig({ domains: ["facebook.com"] }, p);
     const removed = removeDomains(["twitter.com"], p);
     expect(removed).toEqual([]);
+  });
+});
+
+describe("isPidRunning", () => {
+  it("rejects invalid pid values", () => {
+    expect(isPidRunning(0)).toBe(false);
+    expect(isPidRunning(-10)).toBe(false);
+    expect(isPidRunning(Number.NaN)).toBe(false);
+  });
+
+  it("treats EPERM as running (root-owned process)", () => {
+    vi.spyOn(process, "kill").mockImplementation(() => {
+      const err = new Error("operation not permitted") as NodeJS.ErrnoException;
+      err.code = "EPERM";
+      throw err;
+    });
+
+    expect(isPidRunning(4242)).toBe(true);
+  });
+
+  it("returns false when process is gone", () => {
+    vi.spyOn(process, "kill").mockImplementation(() => {
+      const err = new Error("no such process") as NodeJS.ErrnoException;
+      err.code = "ESRCH";
+      throw err;
+    });
+
+    expect(isPidRunning(4242)).toBe(false);
+  });
+});
+
+describe("readAccessLog", () => {
+  it("reads legacy access_log.json when jsonl is missing", () => {
+    const priorHome = process.env.HOME;
+    process.env.HOME = tmpDir;
+    const configDir = path.join(
+      tmpDir,
+      "Library",
+      "Application Support",
+      "SiteBlocker"
+    );
+    fs.mkdirSync(configDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(configDir, "access_log.json"),
+      JSON.stringify([
+        { domain: "a.com", ts: "2026-02-10T00:00:00Z" },
+        { domain: "b.com", ts: "2026-02-11T00:00:00Z" },
+      ])
+    );
+
+    try {
+      const entries = readAccessLog();
+      expect(entries).toHaveLength(2);
+      expect(entries[0].domain).toBe("a.com");
+      expect(entries[1].domain).toBe("b.com");
+    } finally {
+      if (priorHome === undefined) {
+        delete process.env.HOME;
+      } else {
+        process.env.HOME = priorHome;
+      }
+    }
   });
 });

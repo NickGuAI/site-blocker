@@ -4,24 +4,42 @@
  */
 
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import { execSync } from "child_process";
+
+const log = (...args: unknown[]) =>
+  console.log("[site-blocker]", ...args);
 
 const HOSTS_PATH = "/etc/hosts";
 const MARKER_BEGIN = "# BEGIN SITE-BLOCKER";
 const MARKER_END = "# END SITE-BLOCKER";
 
-// Access logger daemon script — resolve for both dev and packaged app
+// Access logger daemon script — resolve for both dev and packaged app.
+// Returns a path in /tmp (copied there to avoid macOS TCC restrictions
+// when osascript runs the script with admin privileges).
 function getLoggerScript(): string | null {
   // Packaged app: <app>/Contents/Resources/access_logger.py
   const packaged = path.join(process.resourcesPath || "", "access_logger.py");
-  if (fs.existsSync(packaged)) return packaged;
-
   // Dev mode: two levels up from electron/dist/
   const dev = path.join(__dirname, "..", "..", "access_logger.py");
-  if (fs.existsSync(dev)) return dev;
 
-  return null;
+  const source = fs.existsSync(packaged)
+    ? packaged
+    : fs.existsSync(dev)
+      ? dev
+      : null;
+
+  if (!source) {
+    log("getLoggerScript: not found (tried", packaged, dev, ")");
+    return null;
+  }
+
+  // Copy to /tmp so osascript elevated process can read it (Desktop is TCC-protected)
+  const dest = "/tmp/site-blocker-access-logger.py";
+  fs.copyFileSync(source, dest);
+  log("getLoggerScript:", source, "->", dest);
+  return dest;
 }
 
 // Config stored in ~/Library/Application Support/SiteBlocker/blocked.json
@@ -40,6 +58,16 @@ function getConfigDir(): string {
 
 function getConfigPath(): string {
   return path.join(getConfigDir(), "blocked.json");
+}
+
+function getRealUser(): string {
+  if (process.env.SUDO_USER) return process.env.SUDO_USER;
+  if (process.env.USER) return process.env.USER;
+  try {
+    return os.userInfo().username;
+  } catch {
+    return "";
+  }
 }
 
 // --- Domain normalization ---
@@ -194,6 +222,7 @@ export function buildHostsContent(
 // --- Privilege escalation via osascript ---
 
 export function writeHostsWithPrivilege(domains: string[]): void {
+  log("writeHostsWithPrivilege: domains =", domains.length);
   const original = fs.readFileSync(HOSTS_PATH, "utf-8");
 
   // Safety: verify localhost entry
@@ -204,10 +233,7 @@ export function writeHostsWithPrivilege(domains: string[]): void {
   const newContent = buildHostsContent(original, domains);
 
   // Write to temp file (unprivileged)
-  const tmpFile = path.join(
-    require("os").tmpdir(),
-    `site-blocker-hosts-${Date.now()}`
-  );
+  const tmpFile = path.join(os.tmpdir(), `site-blocker-hosts-${Date.now()}`);
   fs.writeFileSync(tmpFile, newContent);
 
   // Use osascript for admin privilege — user sees native macOS auth dialog
@@ -222,23 +248,30 @@ export function writeHostsWithPrivilege(domains: string[]): void {
   // Start/stop access logger daemon alongside hosts changes
   // Paths need \" quoting for spaces (e.g. "Site Blocker.app" in packaged path)
   const loggerScript = getLoggerScript();
+  log("writeHostsWithPrivilege: loggerScript =", loggerScript);
   if (domains.length > 0 && loggerScript) {
     // Set SUDO_USER so the daemon writes logs to the real user's home
-    const user = process.env.USER || "";
-    steps.push(
-      `SUDO_USER=${user} /usr/bin/python3 \\"${loggerScript}\\" start`
-    );
+    const user = getRealUser();
+    const loggerCmd = `SUDO_USER=${user} /usr/bin/python3 \\"${loggerScript}\\" start || true`;
+    log("writeHostsWithPrivilege: will start logger:", loggerCmd);
+    steps.push(loggerCmd);
   } else if (domains.length === 0 && loggerScript) {
     steps.unshift(`/usr/bin/python3 \\"${loggerScript}\\" stop || true`);
   }
 
   const script = steps.join(" && ");
+  log("writeHostsWithPrivilege: osascript cmd =", script);
 
   try {
-    execSync(
+    const result = execSync(
       `osascript -e 'do shell script "${script}" with administrator privileges'`,
       { stdio: "pipe" }
     );
+    log("writeHostsWithPrivilege: osascript stdout =", result.toString());
+  } catch (err: unknown) {
+    const e = err as { stderr?: Buffer };
+    log("writeHostsWithPrivilege: osascript FAILED:", e.stderr?.toString());
+    throw err;
   } finally {
     // Clean up temp file
     try {
@@ -266,51 +299,129 @@ export interface AccessLogEntry {
 // --- Access logger daemon lifecycle ---
 
 const PID_FILE = "/tmp/site-blocker-logger.pid";
+const ACCESS_LOG_JSONL = "access_log.jsonl";
+const ACCESS_LOG_JSON = "access_log.json";
 
-export function isLoggerRunning(): boolean {
-  if (!fs.existsSync(PID_FILE)) return false;
+export function isPidRunning(pid: number): boolean {
+  if (!Number.isFinite(pid) || pid <= 0) return false;
   try {
-    const pid = parseInt(fs.readFileSync(PID_FILE, "utf-8").trim(), 10);
     process.kill(pid, 0); // throws if process doesn't exist
     return true;
-  } catch {
-    return false;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    // Root-owned process can be alive but inaccessible from unprivileged app.
+    return code === "EPERM";
   }
 }
 
-export function ensureLoggerRunning(): void {
-  if (isLoggerRunning()) return;
-  const loggerScript = getLoggerScript();
-  if (!loggerScript) return;
+export function isLoggerRunning(): boolean {
+  if (!fs.existsSync(PID_FILE)) {
+    log("isLoggerRunning: no pid file");
+    return false;
+  }
 
-  const user = process.env.USER || "";
+  const pid = parseInt(fs.readFileSync(PID_FILE, "utf-8").trim(), 10);
+  if (!Number.isFinite(pid) || pid <= 0) {
+    log("isLoggerRunning: invalid pid file");
+    return false;
+  }
+
+  if (isPidRunning(pid)) {
+    log("isLoggerRunning: yes, pid =", pid);
+    return true;
+  }
+  log("isLoggerRunning: pid file exists but process dead");
+  return false;
+}
+
+export function ensureLoggerRunning(): void {
+  if (isLoggerRunning()) {
+    log("ensureLoggerRunning: already running");
+    return;
+  }
+  const loggerScript = getLoggerScript();
+  if (!loggerScript) {
+    log("ensureLoggerRunning: no logger script found");
+    return;
+  }
+
+  const user = getRealUser();
   const cmd = `SUDO_USER=${user} /usr/bin/python3 \\"${loggerScript}\\" start`;
+  log("ensureLoggerRunning: cmd =", cmd);
   try {
-    execSync(
+    const result = execSync(
       `osascript -e 'do shell script "${cmd}" with administrator privileges'`,
       { stdio: "pipe" }
     );
-  } catch {
-    // User cancelled auth dialog — access logging won't work but blocking still does
+    log("ensureLoggerRunning: stdout =", result.toString());
+  } catch (err: unknown) {
+    const e = err as { stderr?: Buffer };
+    log("ensureLoggerRunning: FAILED:", e.stderr?.toString());
   }
 }
 
 // --- Access log ---
 
-export function readAccessLog(days?: number): AccessLogEntry[] {
-  const logPath = path.join(getConfigDir(), "access_log.json");
-  if (!fs.existsSync(logPath)) return [];
+function isAccessLogEntry(entry: unknown): entry is AccessLogEntry {
+  if (!entry || typeof entry !== "object") return false;
+  const value = entry as Record<string, unknown>;
+  return typeof value.domain === "string" && typeof value.ts === "string";
+}
 
-  let entries: AccessLogEntry[];
+function parseJsonlAccessLog(logPath: string): AccessLogEntry[] {
+  const raw = fs.readFileSync(logPath, "utf-8");
+  log("readAccessLog: jsonl file =", logPath, "size =", raw.length, "bytes");
+  if (!raw.trim()) return [];
+  const lines = raw.trim().split("\n");
+  log("readAccessLog: jsonl lines =", lines.length);
+  return lines
+    .filter(Boolean)
+    .map((line) => JSON.parse(line))
+    .filter(isAccessLogEntry);
+}
+
+function parseLegacyJsonAccessLog(logPath: string): AccessLogEntry[] {
+  const raw = fs.readFileSync(logPath, "utf-8");
+  log("readAccessLog: legacy file =", logPath, "size =", raw.length, "bytes");
+  const parsed = JSON.parse(raw) as unknown;
+  if (!Array.isArray(parsed)) return [];
+  return parsed.filter(isAccessLogEntry);
+}
+
+export function readAccessLog(days?: number): AccessLogEntry[] {
+  const configDir = getConfigDir();
+  const logPathJsonl = path.join(configDir, ACCESS_LOG_JSONL);
+  const logPathJson = path.join(configDir, ACCESS_LOG_JSON);
+  const hasJsonl = fs.existsSync(logPathJsonl);
+  const hasJson = fs.existsSync(logPathJson);
+  log(
+    "readAccessLog: paths =",
+    logPathJsonl,
+    hasJsonl,
+    logPathJson,
+    hasJson
+  );
+  if (!hasJsonl && !hasJson) return [];
+
+  let entries: AccessLogEntry[] = [];
   try {
-    entries = JSON.parse(fs.readFileSync(logPath, "utf-8"));
-  } catch {
+    if (hasJsonl) {
+      entries = entries.concat(parseJsonlAccessLog(logPathJsonl));
+    }
+    if (hasJson) {
+      entries = entries.concat(parseLegacyJsonAccessLog(logPathJson));
+    }
+    entries.sort((a, b) => new Date(a.ts).getTime() - new Date(b.ts).getTime());
+  } catch (err) {
+    log("readAccessLog: parse error:", err);
     return [];
   }
 
   if (days !== undefined) {
     const cutoff = Date.now() - days * 86400 * 1000;
+    const before = entries.length;
     entries = entries.filter((e) => new Date(e.ts).getTime() >= cutoff);
+    log("readAccessLog: filtered", before, "->", entries.length, "for", days, "days");
   }
 
   return entries;

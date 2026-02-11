@@ -11,6 +11,9 @@ import {
   ensureLoggerRunning,
 } from "./site-blocker";
 
+const log = (...args: unknown[]) =>
+  console.log("[site-blocker]", ...args);
+
 let mainWindow: BrowserWindow | null = null;
 
 function createWindow(): void {
@@ -39,20 +42,25 @@ function createWindow(): void {
 // --- IPC Handlers ---
 
 ipcMain.handle("get-domains", () => {
-  return loadConfig().domains;
+  const domains = loadConfig().domains;
+  log("get-domains:", domains);
+  return domains;
 });
 
 ipcMain.handle("add-domain", (_event, domain: string) => {
+  log("add-domain:", domain);
   const added = addDomains([domain]);
+  log("add-domain added:", added);
 
   // Auto-sync hosts if blocking is active
   if (added.length > 0) {
     try {
       if (isActive()) {
+        log("add-domain: blocking active, syncing hosts");
         writeHostsWithPrivilege(loadConfig().domains);
       }
-    } catch {
-      // User cancelled auth dialog — domain still saved to config
+    } catch (err) {
+      log("add-domain: hosts sync failed:", err);
     }
   }
 
@@ -60,16 +68,19 @@ ipcMain.handle("add-domain", (_event, domain: string) => {
 });
 
 ipcMain.handle("remove-domain", (_event, domain: string) => {
+  log("remove-domain:", domain);
   const removed = removeDomains([domain]);
+  log("remove-domain removed:", removed);
 
   // Auto-sync hosts if blocking is active
   if (removed.length > 0) {
     try {
       if (isActive()) {
+        log("remove-domain: blocking active, syncing hosts");
         writeHostsWithPrivilege(loadConfig().domains);
       }
-    } catch {
-      // User cancelled auth dialog — domain still removed from config
+    } catch (err) {
+      log("remove-domain: hosts sync failed:", err);
     }
   }
 
@@ -78,7 +89,9 @@ ipcMain.handle("remove-domain", (_event, domain: string) => {
 
 ipcMain.handle("get-status", () => {
   try {
-    return isActive();
+    const active = isActive();
+    log("get-status:", active);
+    return active;
   } catch {
     return false;
   }
@@ -86,33 +99,47 @@ ipcMain.handle("get-status", () => {
 
 ipcMain.handle("enable-blocking", () => {
   const config = loadConfig();
+  log("enable-blocking: domains =", config.domains);
   if (config.domains.length === 0) {
     throw new Error("No domains to block. Add some first.");
   }
   writeHostsWithPrivilege(config.domains);
+  log("enable-blocking: done");
 });
 
 ipcMain.handle("disable-blocking", () => {
+  log("disable-blocking");
   writeHostsWithPrivilege([]);
+  log("disable-blocking: done");
 });
 
 ipcMain.handle("get-access-log", (_event, days?: number) => {
-  return readAccessLog(days);
+  const entries = readAccessLog(days);
+  log("get-access-log: days =", days, "entries =", entries.length);
+  if (entries.length > 0) {
+    log("get-access-log: last 3 =", entries.slice(-3));
+  }
+  return entries;
 });
 
 // --- App lifecycle ---
 
 app.whenReady().then(() => {
+  log("app ready");
   createWindow();
 
-  // Ensure access logger daemon is running if blocking is active
-  // (daemon may have died from reboot, crash, or failed start)
-  try {
-    if (isActive() && !isLoggerRunning()) {
+  const active = isActive();
+  const loggerRunning = isLoggerRunning();
+  log("startup: blocking active =", active, "logger running =", loggerRunning);
+
+  if (active && !loggerRunning) {
+    log("startup: logger not running, attempting start...");
+    try {
       ensureLoggerRunning();
+      log("startup: ensureLoggerRunning returned, running =", isLoggerRunning());
+    } catch (err) {
+      log("startup: logger start failed:", err);
     }
-  } catch {
-    // Non-fatal — blocking still works without the logger
   }
 });
 

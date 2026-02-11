@@ -42,6 +42,15 @@
     <!-- Domain list -->
     <div id="domain-list" class="domain-list"></div>
 
+    <!-- Access log -->
+    <div class="log-section">
+      <div class="log-header">
+        <span class="log-title">Recent Access Attempts</span>
+        <span id="access-log-count" class="log-count"></span>
+      </div>
+      <div id="access-log-list" class="access-log-list"></div>
+    </div>
+
     <!-- Footer -->
     <div class="footer">
       <span id="domain-count" class="domain-count"></span>
@@ -59,9 +68,12 @@
     const toggleBlocking = document.getElementById('toggle-blocking');
     const statusBadge = document.getElementById('status-badge');
     const domainCount = document.getElementById('domain-count');
+    const accessLogList = document.getElementById('access-log-list');
+    const accessLogCount = document.getElementById('access-log-count');
     const toast = document.getElementById('toast');
 
     let toastTimer = null;
+    let refreshInFlight = false;
 
     function showToast(msg) {
       toast.textContent = msg;
@@ -72,6 +84,19 @@
 
     // Access log: domain -> last attempt timestamp
     let accessLogMap = {};
+
+    function normalizeDomainForLookup(domain) {
+      return String(domain || '').toLowerCase().replace(/^www\./, '');
+    }
+
+    function escapeHtml(text) {
+      return String(text || '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+    }
 
     function formatStreak(lastTs) {
       if (!lastTs) return null;
@@ -88,6 +113,47 @@
       return parts.join(', ') + ' clean';
     }
 
+    function formatRelative(ts) {
+      const elapsed = Date.now() - new Date(ts).getTime();
+      if (!Number.isFinite(elapsed) || elapsed < 0) return 'just now';
+      const minutes = Math.floor(elapsed / 60000);
+      if (minutes < 1) return 'just now';
+      if (minutes < 60) return `${minutes}m ago`;
+      const hours = Math.floor(minutes / 60);
+      if (hours < 24) return `${hours}h ago`;
+      const days = Math.floor(hours / 24);
+      return `${days}d ago`;
+    }
+
+    function formatAbsolute(ts) {
+      const d = new Date(ts);
+      if (Number.isNaN(d.getTime())) return ts;
+      return d.toLocaleString();
+    }
+
+    function renderAccessLog(entries) {
+      const sorted = [...entries].sort((a, b) => new Date(b.ts) - new Date(a.ts));
+      const visible = sorted.slice(0, 30);
+      accessLogCount.textContent = `${entries.length} ${entries.length === 1 ? 'entry' : 'entries'}`;
+
+      if (visible.length === 0) {
+        accessLogList.innerHTML = '<div class="empty-state compact"><span class="empty-state-text">No attempts yet</span></div>';
+        return;
+      }
+
+      accessLogList.innerHTML = visible.map((entry) => {
+        const domain = escapeHtml(entry.domain);
+        const abs = escapeHtml(formatAbsolute(entry.ts));
+        const rel = escapeHtml(formatRelative(entry.ts));
+        return `
+          <div class="log-entry">
+            <span class="log-entry-domain">${domain}</span>
+            <span class="log-entry-time" title="${abs}">${rel}</span>
+          </div>
+        `;
+      }).join('');
+    }
+
     function renderDomains(domains) {
       if (domains.length === 0) {
         domainList.innerHTML = '<div class="empty-state"><span class="empty-state-text">No domains yet</span></div>';
@@ -97,7 +163,7 @@
 
       const sorted = [...domains].sort();
       domainList.innerHTML = sorted.map(d => {
-        const lastTs = accessLogMap[d];
+        const lastTs = accessLogMap[normalizeDomainForLookup(d)];
         const streak = formatStreak(lastTs);
         const streakHtml = streak
           ? `<span class="domain-streak">${streak}</span>`
@@ -123,6 +189,8 @@
     }
 
     async function refresh() {
+      if (refreshInFlight) return;
+      refreshInFlight = true;
       try {
         const [domains, active, logEntries] = await Promise.all([
           api.getDomains(),
@@ -133,16 +201,20 @@
         // Build map: domain -> most recent timestamp
         accessLogMap = {};
         for (const entry of logEntries) {
-          const prev = accessLogMap[entry.domain];
+          const key = normalizeDomainForLookup(entry.domain);
+          const prev = accessLogMap[key];
           if (!prev || entry.ts > prev) {
-            accessLogMap[entry.domain] = entry.ts;
+            accessLogMap[key] = entry.ts;
           }
         }
 
         renderDomains(domains);
+        renderAccessLog(logEntries);
         updateBadge(active);
       } catch (err) {
         showToast('Failed to load data');
+      } finally {
+        refreshInFlight = false;
       }
     }
 
@@ -202,6 +274,7 @@
 
     // Initial load
     refresh();
+    setInterval(refresh, 15000);
   </script>
 </body>
 </html>
