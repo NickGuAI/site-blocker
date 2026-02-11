@@ -7,6 +7,8 @@ import {
   isActive,
   writeHostsWithPrivilege,
   readAccessLog,
+  isLoggerRunning,
+  ensureLoggerRunning,
 } from "./site-blocker";
 
 let mainWindow: BrowserWindow | null = null;
@@ -100,7 +102,19 @@ ipcMain.handle("get-access-log", (_event, days?: number) => {
 
 // --- App lifecycle ---
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  createWindow();
+
+  // Ensure access logger daemon is running if blocking is active
+  // (daemon may have died from reboot, crash, or failed start)
+  try {
+    if (isActive() && !isLoggerRunning()) {
+      ensureLoggerRunning();
+    }
+  } catch {
+    // Non-fatal — blocking still works without the logger
+  }
+});
 
 app.on("window-all-closed", () => {
   app.quit();

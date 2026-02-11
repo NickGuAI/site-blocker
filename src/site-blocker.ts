@@ -216,7 +216,7 @@ export function writeHostsWithPrivilege(domains: string[]): void {
     `cp ${tmpFile} /etc/hosts`,
     `chmod 644 /etc/hosts`,
     `dscacheutil -flushcache`,
-    `killall -HUP mDNSResponder`,
+    `killall -HUP mDNSResponder 2>/dev/null || true`,
   ];
 
   // Start/stop access logger daemon alongside hosts changes
@@ -262,6 +262,40 @@ export interface AccessLogEntry {
   domain: string;
   ts: string;
 }
+
+// --- Access logger daemon lifecycle ---
+
+const PID_FILE = "/tmp/site-blocker-logger.pid";
+
+export function isLoggerRunning(): boolean {
+  if (!fs.existsSync(PID_FILE)) return false;
+  try {
+    const pid = parseInt(fs.readFileSync(PID_FILE, "utf-8").trim(), 10);
+    process.kill(pid, 0); // throws if process doesn't exist
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function ensureLoggerRunning(): void {
+  if (isLoggerRunning()) return;
+  const loggerScript = getLoggerScript();
+  if (!loggerScript) return;
+
+  const user = process.env.USER || "";
+  const cmd = `SUDO_USER=${user} /usr/bin/python3 \\"${loggerScript}\\" start`;
+  try {
+    execSync(
+      `osascript -e 'do shell script "${cmd}" with administrator privileges'`,
+      { stdio: "pipe" }
+    );
+  } catch {
+    // User cancelled auth dialog — access logging won't work but blocking still does
+  }
+}
+
+// --- Access log ---
 
 export function readAccessLog(days?: number): AccessLogEntry[] {
   const logPath = path.join(getConfigDir(), "access_log.json");
