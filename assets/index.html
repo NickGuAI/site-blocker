@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'self' 'unsafe-inline'">
+  <title>Site Blocker</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="titlebar-drag"></div>
+
+  <div class="container">
+    <!-- Header -->
+    <div class="header">
+      <h1 class="title">Site Blocker</h1>
+      <span id="status-badge" class="badge badge-inactive">Inactive</span>
+    </div>
+
+    <!-- Toggle -->
+    <div class="toggle-row">
+      <span class="toggle-label">Block sites</span>
+      <label class="toggle-switch">
+        <input type="checkbox" id="toggle-blocking">
+        <span class="toggle-track"></span>
+      </label>
+    </div>
+
+    <!-- Add domain -->
+    <div class="input-row">
+      <input
+        type="text"
+        id="domain-input"
+        class="domain-input"
+        placeholder="example.com"
+        autocomplete="off"
+        spellcheck="false"
+      >
+      <button id="btn-add" class="btn-add">Add</button>
+    </div>
+
+    <!-- Domain list -->
+    <div id="domain-list" class="domain-list"></div>
+
+    <!-- Footer -->
+    <div class="footer">
+      <span id="domain-count" class="domain-count"></span>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast" class="toast"></div>
+
+  <script>
+    const api = window.siteBlocker;
+    const domainList = document.getElementById('domain-list');
+    const domainInput = document.getElementById('domain-input');
+    const btnAdd = document.getElementById('btn-add');
+    const toggleBlocking = document.getElementById('toggle-blocking');
+    const statusBadge = document.getElementById('status-badge');
+    const domainCount = document.getElementById('domain-count');
+    const toast = document.getElementById('toast');
+
+    let toastTimer = null;
+
+    function showToast(msg) {
+      toast.textContent = msg;
+      toast.classList.add('visible');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => toast.classList.remove('visible'), 2500);
+    }
+
+    function renderDomains(domains) {
+      if (domains.length === 0) {
+        domainList.innerHTML = '<div class="empty-state"><span class="empty-state-text">No domains yet</span></div>';
+        domainCount.textContent = '';
+        return;
+      }
+
+      const sorted = [...domains].sort();
+      domainList.innerHTML = sorted.map(d => `
+        <div class="domain-card" data-domain="${d}">
+          <span class="domain-name">${d}</span>
+          <button class="btn-remove" title="Remove ${d}">&times;</button>
+        </div>
+      `).join('');
+
+      domainCount.textContent = `${domains.length} domain${domains.length === 1 ? '' : 's'}`;
+    }
+
+    function updateBadge(active) {
+      statusBadge.textContent = active ? 'Active' : 'Inactive';
+      statusBadge.className = active ? 'badge badge-active' : 'badge badge-inactive';
+      toggleBlocking.checked = active;
+    }
+
+    async function refresh() {
+      try {
+        const [domains, active] = await Promise.all([
+          api.getDomains(),
+          api.getStatus()
+        ]);
+        renderDomains(domains);
+        updateBadge(active);
+      } catch (err) {
+        showToast('Failed to load data');
+      }
+    }
+
+    // Add domain
+    async function handleAdd() {
+      const val = domainInput.value.trim();
+      if (!val) return;
+
+      try {
+        const added = await api.addDomain(val);
+        domainInput.value = '';
+        if (added.length === 0) {
+          showToast('Already in list');
+        }
+        await refresh();
+      } catch (err) {
+        showToast(err.message || 'Invalid domain');
+      }
+    }
+
+    btnAdd.addEventListener('click', handleAdd);
+    domainInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') handleAdd();
+    });
+
+    // Remove domain
+    domainList.addEventListener('click', async (e) => {
+      const btn = e.target.closest('.btn-remove');
+      if (!btn) return;
+      const card = btn.closest('.domain-card');
+      const domain = card.dataset.domain;
+
+      try {
+        await api.removeDomain(domain);
+        await refresh();
+      } catch (err) {
+        showToast(err.message || 'Failed to remove');
+      }
+    });
+
+    // Toggle blocking
+    toggleBlocking.addEventListener('change', async () => {
+      const shouldEnable = toggleBlocking.checked;
+      try {
+        if (shouldEnable) {
+          await api.enableBlocking();
+        } else {
+          await api.disableBlocking();
+        }
+        await refresh();
+      } catch (err) {
+        // Revert toggle on failure (user cancelled auth)
+        toggleBlocking.checked = !shouldEnable;
+        showToast(err.message || 'Operation cancelled');
+      }
+    });
+
+    // Initial load
+    refresh();
+  </script>
+</body>
+</html>
